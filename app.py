@@ -8,6 +8,9 @@ import os
 import dlib
 import math
 from scipy.spatial import distance as dist
+import joblib
+import warnings
+warnings.filterwarnings("ignore")
 
 
 app = Flask(__name__)
@@ -77,7 +80,97 @@ def process_frame():
     
     # Return the result
     return matched_target_image
+ 
+
+def calc_hist(img):
+    histogram = [0] * 3
+    for j in range(3):
+        histr = cv2.calcHist([img], [j], None, [256], [0, 256])
+        histr *= 255.0 / histr.max()
+        histogram[j] = histr
+    return np.array(histogram)
+
+
+modelFile = "models/res10_300x300_ssd_iter_140000.caffemodel"
+configFile = "models/deploy.prototxt"
+net = cv2.dnn.readNetFromCaffe(configFile, modelFile)
+clf = joblib.load('models/face_spoofing.pkl')
+
+
+def process_base64_image(base64_image):
+    try:
+        image = base64.b64decode(base64_image.split(',')[1])
+        nparr = np.frombuffer(image, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        return img
+    except Exception as e:
+        return None
+
+
+def detect_face_spoofing(base64_image):
+    img = process_base64_image(base64_image)
+
+    if img is None:
+        return None
+
+    height, width = img.shape[:2]
+
+    blob = cv2.dnn.blobFromImage(cv2.resize(img, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
+    net.setInput(blob)
+    faces3 = net.forward()
+
+    measures = np.zeros(1, dtype=np.float)
+
+    if faces3 is not None:
+        for i in range(faces3.shape[2]):
+            confidence = faces3[0, 0, i, 2]
+            if confidence > 0.5:
+                box = faces3[0, 0, i, 3:7] * np.array([width, height, width, height])
+                (x, y, x1, y1) = box.astype("int")
+                roi = img[y:y1, x:x1]
+
+                point = (0, 0)
+
+                img_ycrcb = cv2.cvtColor(roi, cv2.COLOR_BGR2YCR_CB)
+                img_luv = cv2.cvtColor(roi, cv2.COLOR_BGR2LUV)
+
+                ycrcb_hist = calc_hist(img_ycrcb)
+                luv_hist = calc_hist(img_luv)
+
+                feature_vector = np.append(ycrcb_hist.ravel(), luv_hist.ravel())
+                feature_vector = feature_vector.reshape(1, len(feature_vector))
+
+                prediction = clf.predict_proba(feature_vector)
+                prob = prediction[0][1]
+
+                measures[0] = prob
+
+                cv2.rectangle(img, (x, y), (x1, y1), (255, 0, 0), 2)
+
+                point = (x, y-5)
+                
+                if 0 not in measures:
+                    if np.mean(measures) >= 0.7:
+                        return "Spoof"
+                    else:
+                        return "Real"
+    else:
+        return None
+
+
+@app.route('/spoofing_detection_multiple_images', methods=['POST'])
+def spoofing_detection_multiple_images():
+    req_data = request.get_json(force=True)
     
+    images = req_data['images'] # extracting base64 images
+    
+    result = []
+    for image in images:
+        result.append(detect_face_spoofing(image))
+      
+    # Return the result
+    return result
+
 
 @app.route('/')
 def index():
