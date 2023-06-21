@@ -164,12 +164,17 @@ def spoofing_detection_multiple_images():
     
     images = req_data['images'] # extracting base64 images
     
-    result = []
+    count = 0
     for image in images:
-        result.append(detect_face_spoofing(image))
-      
-    # Return the result
-    return result
+        result = detect_face_spoofing(image)
+
+        if result == "Real":
+            count = count + 1
+    
+    if count >= 15:
+        return "Real"
+    else:
+        return "Spoof"
 
 
 @app.route('/')
